@@ -1,0 +1,2368 @@
+#include <iostream>
+#include <algorithm>
+#include <cmath>
+#include <SFML/Graphics.hpp>
+#include <SFML/Window.hpp>
+#include <SFML/Audio.hpp>
+#include <time.h>
+#include <unistd.h> 
+
+using namespace sf;
+using namespace std;
+
+const int WIDTH = 10;
+const int HEIGHT = 25;
+const int FRAMERATE = 75;
+
+# define M_PI 3.14159265358979323846
+
+// 調整難易度、模式 ///////////////////////////////////////////////////////////////////////////////////////
+int mode = 0;
+int mode2_lines = 10; // 條數 
+int mode3_time = 10; // 時間 (s) 
+int sec_subtract_for_new_time = 0;
+int milsec_subtract_for_new_time = 0;
+
+int difficulty_choice = 0;
+int difficulty = 1;
+int all_line_count = 0;
+int all_piece_count = 0;
+int combo_count = 0;
+int sec = 0;
+int milsec = 0;
+
+// 調整 hold_check;
+int hold_check = 0;
+
+// 調整長按
+int hold_key_milsec = 0; 
+int hold_key_once = 0;
+
+// 紀錄時間
+int  finish_time = 0;
+int  finish_time_check = 0;
+int best_time = 0;
+
+#define Z_TETROMINO 0
+#define L_TETROMINO 1
+#define O_TETROMINO 2
+#define S_TETROMINO 3
+#define I_TETROMINO 4
+#define J_TETROMINO 5
+#define T_TETROMINO 6
+
+int board[HEIGHT][WIDTH] = {0};
+
+
+// function 產生新的bag (由這個function會產生七個等下要掉落的方塊和預備方塊)
+vector <int> generateNewBag() 
+{
+    vector <int> template_bag;
+
+    for(int i = 0; i < 7; i++) 
+    {
+        //新增0,1,2,3,4,5,6到template_bag
+        template_bag.push_back(i);
+    }
+
+    vector <int> new_bag;
+
+    // 只要template bag有東西 整個while回圈就是把0,1,2,3,4,5,6隨機排列
+    while(template_bag.size() > 0) 
+    {
+        int index = rand() % template_bag.size();
+        int choose_piece = template_bag.at(index);
+        template_bag.erase(template_bag.begin() + index);
+        new_bag.push_back(choose_piece);
+    }
+
+    return new_bag;
+}
+
+class Piece {
+
+    public :
+
+    int x;
+    int y;
+    // 預設旋轉是1
+    int rotation = 1;
+
+    // 旋轉function
+    void Rotate(Piece center, int direction) {
+
+        int x = this->y - center.y;
+        int y = this->x - center.x;
+        this->x = center.x + (x * -direction);
+        this->y = center.y + (y * direction);
+
+        this->rotation += direction;
+
+        if(this->rotation > 4) this->rotation = 1;
+        if(this->rotation < 1) this->rotation = 4;
+    }
+};
+
+Piece piece[4], cache[4], ghost[4];
+
+// 七種俄羅斯方塊的排法
+int pieces[7][4] = 
+{
+    {3, 4, 5, 6},
+    {2, 4, 6, 7},
+    {2, 3, 4, 5},
+    {2, 4, 5, 7},
+    {1, 3, 5, 7},
+    {3, 5, 6, 7},
+    {2, 4, 5, 6}
+};
+
+// 鎖住方塊
+class PieceLock 
+{
+
+    public :
+
+    int x;
+    int y;
+    double animation = 0;
+};
+vector <vector <PieceLock> > pieces_lock;
+
+// 放入整數，整數<0 回傳-1，整數>0 回傳1，整數=0，回傳０
+int sign(int num) 
+{
+    if(num < 0) return -1;
+    else if(num > 0) return 1;
+    else return 0;
+}
+
+bool isCollidedGhost() 
+{
+    for(int i = 0; i < 4; i++) 
+    {
+        if(ghost[i].y >= HEIGHT) 
+        {
+            return false;
+        }
+        else if(board[ghost[i].y][ghost[i].x]) 
+        {
+            return false;
+        }
+    }
+    return 1;
+}
+
+
+// 檢查有沒有撞到兩邊或者是底下碰到的function
+bool isCollided() 
+{
+
+    for(int i = 0; i < 4; i++) 
+    {
+        // 假如有碰到左右兩邊邊框的話，回傳false，
+        if(piece[i].x < 0 || piece[i].x >= WIDTH || piece[i].y >= HEIGHT) 
+        {
+            return false;
+        }
+        // 假如說piece那個格子的x,y座標有碰到已經有東西的話，也會回傳false
+        else if(board[piece[i].y][piece[i].x]) 
+        {
+            return false;
+        }
+    }
+    return 1;
+}
+
+// 
+bool isDead() 
+{
+    for(int i = 0; i < 4; i++) 
+    {
+        if(board[piece[i].y][piece[i].x]) 
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+// 消除 40 條 
+bool mode_lines(int mode, int all_line_count)
+{
+	if(mode == 2) //起始畫面是否點擊 2
+	{
+		if(all_line_count >= mode2_lines)
+		{
+			return true;
+		}
+	}
+	return false;
+} 
+
+// 定時 2 分鐘 
+bool mode_time(int mode, int sec, int sec_subtract_for_new_time)
+{
+	if(mode == 3) //起始畫面是否點擊 3
+	{
+		if(sec - sec_subtract_for_new_time >= mode3_time)
+		{
+			return true;
+		}
+	}
+	return false;
+} 
+
+//Record best score
+int best_score = 0;
+
+int main() 
+{
+	// 建立初始畫面 
+	Text text;
+	Font font;
+	font.loadFromFile("resource/font/Roamer.ttf");
+	
+	srand(time(0));
+	
+    // 標題 
+    RenderWindow window(VideoMode(600, 720), "Tetris Game", Style::Close);
+
+	// 載入資源 
+    // 聲音
+    Sound sfx_warning; SoundBuffer buffer_warning;
+    buffer_warning.loadFromFile("resource/sound/warning.ogg");
+    sfx_warning.setBuffer(buffer_warning);
+    
+    Sound sfx_clearline; SoundBuffer buffer_clearline;
+    buffer_clearline.loadFromFile("resource/sound/clearline.ogg");
+    sfx_clearline.setBuffer(buffer_clearline);
+
+    Sound sfx_clearquad; SoundBuffer buffer_clearquad;
+    buffer_clearquad.loadFromFile("resource/sound/clearquad.ogg");
+    sfx_clearquad.setBuffer(buffer_clearquad);
+
+    Sound sfx_clearspin; SoundBuffer buffer_clearspin;
+    buffer_clearspin.loadFromFile("resource/sound/clearspin.ogg");
+    sfx_clearspin.setBuffer(buffer_clearspin);
+
+    Sound sfx_clearbtb; SoundBuffer buffer_clearbtb;
+    buffer_clearbtb.loadFromFile("resource/sound/clearbtb.ogg");
+    sfx_clearbtb.setBuffer(buffer_clearbtb);
+
+    Sound sfx_btb_break; SoundBuffer buffer_btb_break;
+    buffer_btb_break.loadFromFile("resource/sound/btb_break.ogg");
+    sfx_btb_break.setBuffer(buffer_btb_break);
+
+    Sound sfx_combo_1; SoundBuffer buffer_combo_1;
+    buffer_combo_1.loadFromFile("resource/sound/combo_1.ogg");
+    sfx_combo_1.setBuffer(buffer_combo_1);
+
+    Sound sfx_combo_2; SoundBuffer buffer_combo_2;
+    buffer_combo_2.loadFromFile("resource/sound/combo_2.ogg");
+    sfx_combo_2.setBuffer(buffer_combo_2);
+
+    Sound sfx_combo_3; SoundBuffer buffer_combo_3;
+    buffer_combo_3.loadFromFile("resource/sound/combo_3.ogg");
+    sfx_combo_3.setBuffer(buffer_combo_3);
+
+    Sound sfx_combo_4; SoundBuffer buffer_combo_4;
+    buffer_combo_4.loadFromFile("resource/sound/combo_4.ogg");
+    sfx_combo_4.setBuffer(buffer_combo_4);
+
+    Sound sfx_combo_5; SoundBuffer buffer_combo_5;
+    buffer_combo_5.loadFromFile("resource/sound/combo_5.ogg");
+    sfx_combo_5.setBuffer(buffer_combo_5);
+
+    Sound sfx_combo_6; SoundBuffer buffer_combo_6;
+    buffer_combo_6.loadFromFile("resource/sound/combo_6.ogg");
+    sfx_combo_6.setBuffer(buffer_combo_6);
+
+    Sound sfx_combo_7; SoundBuffer buffer_combo_7;
+    buffer_combo_7.loadFromFile("resource/sound/combo_7.ogg");
+    sfx_combo_7.setBuffer(buffer_combo_7);
+
+    Sound sfx_combo_8; SoundBuffer buffer_combo_8;
+    buffer_combo_8.loadFromFile("resource/sound/combo_8.ogg");
+    sfx_combo_8.setBuffer(buffer_combo_8);
+
+    Sound sfx_combo_9; SoundBuffer buffer_combo_9;
+    buffer_combo_9.loadFromFile("resource/sound/combo_9.ogg");
+    sfx_combo_9.setBuffer(buffer_combo_9);
+
+    Sound sfx_combo_10; SoundBuffer buffer_combo_10;
+    buffer_combo_10.loadFromFile("resource/sound/combo_10.ogg");
+    sfx_combo_10.setBuffer(buffer_combo_10);
+
+    Sound sfx_combo_11; SoundBuffer buffer_combo_11;
+    buffer_combo_11.loadFromFile("resource/sound/combo_11.ogg");
+    sfx_combo_11.setBuffer(buffer_combo_11);
+
+    Sound sfx_combo_12; SoundBuffer buffer_combo_12;
+    buffer_combo_12.loadFromFile("resource/sound/combo_12.ogg");
+    sfx_combo_12.setBuffer(buffer_combo_12);
+
+    Sound sfx_combo_13; SoundBuffer buffer_combo_13;
+    buffer_combo_13.loadFromFile("resource/sound/combo_13.ogg");
+    sfx_combo_13.setBuffer(buffer_combo_13);
+
+    Sound sfx_combo_14; SoundBuffer buffer_combo_14;
+    buffer_combo_14.loadFromFile("resource/sound/combo_14.ogg");
+    sfx_combo_14.setBuffer(buffer_combo_14);
+
+    Sound sfx_combo_15; SoundBuffer buffer_combo_15;
+    buffer_combo_15.loadFromFile("resource/sound/combo_15.ogg");
+    sfx_combo_15.setBuffer(buffer_combo_15);
+
+    Sound sfx_combo_16; SoundBuffer buffer_combo_16;
+    buffer_combo_16.loadFromFile("resource/sound/combo_16.ogg");
+    sfx_combo_16.setBuffer(buffer_combo_16);
+
+    Sound sfx_combo_1_power; SoundBuffer buffer_combo_1_power;
+    buffer_combo_1_power.loadFromFile("resource/sound/combo_1_power.ogg");
+    sfx_combo_1_power.setBuffer(buffer_combo_1_power);
+
+    Sound sfx_combo_2_power; SoundBuffer buffer_combo_2_power;
+    buffer_combo_2_power.loadFromFile("resource/sound/combo_2_power.ogg");
+    sfx_combo_2_power.setBuffer(buffer_combo_2_power);
+
+    Sound sfx_combo_3_power; SoundBuffer buffer_combo_3_power;
+    buffer_combo_3_power.loadFromFile("resource/sound/combo_3_power.ogg");
+    sfx_combo_3_power.setBuffer(buffer_combo_3_power);
+
+    Sound sfx_combo_4_power; SoundBuffer buffer_combo_4_power;
+    buffer_combo_4_power.loadFromFile("resource/sound/combo_4_power.ogg");
+    sfx_combo_4_power.setBuffer(buffer_combo_4_power);
+
+    Sound sfx_combo_5_power; SoundBuffer buffer_combo_5_power;
+    buffer_combo_5_power.loadFromFile("resource/sound/combo_5_power.ogg");
+    sfx_combo_5_power.setBuffer(buffer_combo_5_power);
+
+    Sound sfx_combo_6_power; SoundBuffer buffer_combo_6_power;
+    buffer_combo_6_power.loadFromFile("resource/sound/combo_6_power.ogg");
+    sfx_combo_6_power.setBuffer(buffer_combo_6_power);
+
+    Sound sfx_combo_7_power; SoundBuffer buffer_combo_7_power;
+    buffer_combo_7_power.loadFromFile("resource/sound/combo_7_power.ogg");
+    sfx_combo_7_power.setBuffer(buffer_combo_7_power);
+
+    Sound sfx_combo_8_power; SoundBuffer buffer_combo_8_power;
+    buffer_combo_8_power.loadFromFile("resource/sound/combo_8_power.ogg");
+    sfx_combo_8_power.setBuffer(buffer_combo_8_power);
+
+    Sound sfx_combo_9_power; SoundBuffer buffer_combo_9_power;
+    buffer_combo_9_power.loadFromFile("resource/sound/combo_9_power.ogg");
+    sfx_combo_9_power.setBuffer(buffer_combo_9_power);
+
+    Sound sfx_combo_10_power; SoundBuffer buffer_combo_10_power;
+    buffer_combo_10_power.loadFromFile("resource/sound/combo_10_power.ogg");
+    sfx_combo_10_power.setBuffer(buffer_combo_10_power);
+
+    Sound sfx_combo_11_power; SoundBuffer buffer_combo_11_power;
+    buffer_combo_11_power.loadFromFile("resource/sound/combo_11_power.ogg");
+    sfx_combo_11_power.setBuffer(buffer_combo_11_power);
+
+    Sound sfx_combo_12_power; SoundBuffer buffer_combo_12_power;
+    buffer_combo_12_power.loadFromFile("resource/sound/combo_12_power.ogg");
+    sfx_combo_12_power.setBuffer(buffer_combo_12_power);
+
+    Sound sfx_combo_13_power; SoundBuffer buffer_combo_13_power;
+    buffer_combo_13_power.loadFromFile("resource/sound/combo_13_power.ogg");
+    sfx_combo_13_power.setBuffer(buffer_combo_13_power);
+
+    Sound sfx_combo_14_power; SoundBuffer buffer_combo_14_power;
+    buffer_combo_14_power.loadFromFile("resource/sound/combo_14_power.ogg");
+    sfx_combo_14_power.setBuffer(buffer_combo_14_power);
+
+    Sound sfx_combo_15_power; SoundBuffer buffer_combo_15_power;
+    buffer_combo_15_power.loadFromFile("resource/sound/combo_15_power.ogg");
+    sfx_combo_15_power.setBuffer(buffer_combo_15_power);
+
+    Sound sfx_combo_16_power; SoundBuffer buffer_combo_16_power;
+    buffer_combo_16_power.loadFromFile("resource/sound/combo_16_power.ogg");
+    sfx_combo_16_power.setBuffer(buffer_combo_16_power);
+
+    Sound sfx_combobreak; SoundBuffer buffer_combobreak;
+    buffer_combobreak.loadFromFile("resource/sound/combobreak.ogg");
+    sfx_combobreak.setBuffer(buffer_combobreak);
+
+    Sound sfx_move; SoundBuffer buffer_move;
+    buffer_move.loadFromFile("resource/sound/move.ogg");
+    sfx_move.setBuffer(buffer_move);
+
+    Sound sfx_rotate; SoundBuffer buffer_rotate;
+    buffer_rotate.loadFromFile("resource/sound/rotate.ogg");
+    sfx_rotate.setBuffer(buffer_rotate);
+
+    Sound sfx_spin; SoundBuffer buffer_spin;
+    buffer_spin.loadFromFile("resource/sound/spin.ogg");
+    sfx_spin.setBuffer(buffer_spin);
+
+    Sound sfx_hold; SoundBuffer buffer_hold;
+    buffer_hold.loadFromFile("resource/sound/hold.ogg");
+    sfx_hold.setBuffer(buffer_hold);
+
+    Sound sfx_harddrop; SoundBuffer buffer_harddrop;
+    buffer_harddrop.loadFromFile("resource/sound/harddrop.ogg");
+    sfx_harddrop.setBuffer(buffer_harddrop);
+
+    Sound sfx_hit; SoundBuffer buffer_hit;
+    buffer_hit.loadFromFile("resource/sound/hit.ogg");
+    sfx_hit.setBuffer(buffer_hit);
+
+    Sound sfx_floor; SoundBuffer buffer_floor;
+    buffer_floor.loadFromFile("resource/sound/floor.ogg");
+    sfx_floor.setBuffer(buffer_floor);
+
+    Sound sfx_sidehit; SoundBuffer buffer_sidehit;
+    buffer_sidehit.loadFromFile("resource/sound/sidehit.ogg");
+    sfx_sidehit.setBuffer(buffer_sidehit);
+
+    Sound sfx_allclear; SoundBuffer buffer_allclear;
+    buffer_allclear.loadFromFile("resource/sound/allclear.ogg");
+    sfx_allclear.setBuffer(buffer_allclear);
+
+    //方塊
+    Texture t;
+    t.loadFromFile("resource/image/jstris1.png");
+    int texture_size = 30;
+    Sprite s(t);
+    s.setTextureRect(IntRect(0, 0, texture_size, texture_size));
+
+    //陰影塊
+    Texture t_ghost;
+    t_ghost.loadFromFile("resource/image/ghost.png");
+    Sprite s_ghost(t_ghost);
+    s_ghost.setTextureRect(IntRect(0, 0, texture_size, texture_size));
+
+    //把方塊鎖住的動畫
+    Texture t_lock;
+    t_lock.loadFromFile("resource/image/piece_lock.png");
+    Sprite s_lock(t_lock);
+    s_lock.setTextureRect(IntRect(0, 0, texture_size, texture_size));
+
+    //板子
+    Texture board_t;
+    board_t.loadFromFile("resource/image/board.png");
+    Sprite board_s(board_t);
+
+/*    //一開始的背景
+    Texture start_t;
+    start_t.loadFromFile("resource/image/tetris.png");
+    Sprite start_s(start_t);
+*/
+    // 一開始的圖示
+    Texture starticon_t;
+    starticon_t.loadFromFile("resource/image/toptetris.png");
+    Sprite starticon_s(starticon_t);
+
+
+    //背景圖片
+    Texture background_t;
+    background_t.loadFromFile("resource/image/ccc.png");
+    Sprite background_s(background_t);
+
+    //Combo1-3爆炸圖
+    Texture explodeto_t;
+    explodeto_t.loadFromFile("resource/image/explosion.png");
+    Sprite explodeto_s(explodeto_t);
+
+    //Combo4-6爆炸圖
+    Texture explode4to6_t;
+    explode4to6_t.loadFromFile("resource/image/explosion4to6.png");
+    Sprite explode4to6_s(explode4to6_t);
+
+    //Combo7-9爆炸圖
+    Texture explode7to9_t;
+    explode7to9_t.loadFromFile("resource/image/explosion7to9.png");
+    Sprite explode7to9_s(explode7to9_t);
+
+    //Combo10以上爆炸圖
+    Texture explode10_t;
+    explode10_t.loadFromFile("resource/image/explosion10.png");
+    Sprite explode10_s(explode10_t);
+
+
+    //下一個方塊
+    Texture nextsquare_t;
+    nextsquare_t.loadFromFile("resource/image/cooksquare.png");
+    Sprite nextsquare_s(nextsquare_t);
+
+    //左邊長形框
+    Texture fontsquare_t;
+    fontsquare_t.loadFromFile("resource/image/fontsquare.png");
+    Sprite fontsquare_s(fontsquare_t);
+
+    //Sad emoji
+    Texture sad_face_t;
+    sad_face_t.loadFromFile("resource/image/sad.png");
+    Sprite sad_face_s(sad_face_t);
+
+    // Gameover 背景
+    Texture overBackground_t;
+    overBackground_t.loadFromFile("resource/image/gameoverBackground.jpg");
+    Sprite overBackground_s(overBackground_t);
+
+    
+    int hold;
+    int move_x;
+    int rotate;
+    int color;
+    int harddrop;
+    int holded;
+    int move_left;
+    int move_right;
+    int start;
+
+	// clock 獲取遊戲中已過去時間的長短 
+    Clock clock;
+    Clock game_clock;
+    Clock game_elapsed_time;
+
+    double timer;
+    double delay;
+    
+    // 建立 seven_bag, seven_bag_next 的 vector
+	// vector 可以改變陣列大小的序列容器 (連續記憶體空間) 
+    vector <int> seven_bag;
+    vector <int> seven_bag_next;
+
+    restart :
+
+    //Handling control
+    double das = 8;  // delayed auto time (自動移動延遲): 按住一個鍵多久之後會一直重複此按鍵 
+	 
+    double lock_delay = 0.3;  // 鎖定延遲: 方塊落地後還能移動的時間 
+    double fastdrop_delay = 0;
+    int lock_count = 14;
+    int is_touch_ground = 0;
+
+    int all_line_count = 0;
+    int all_piece_count = 0;
+	int combo_count = 0;
+
+    int lock_count_value = lock_count;
+    double das_value = das;
+    double lock_delay_value = lock_delay;
+	
+	// initializtion 
+    for(int i = 0; i < HEIGHT; i++)
+        for(int j = 0; j < WIDTH; j++)
+            board[i][j] = 0;
+
+    start = 3;
+    timer = 0;
+    delay = 0.5;
+    move_x = 0;
+    color = 0;
+    harddrop = 0;  // 直接落下 
+    rotate = 0;
+    hold = -1;
+    move_left = 0;
+    move_right = 0;
+    holded = 0;
+    seven_bag = generateNewBag();  // 制定出塊規則: 規定每 7 塊必為不同的方塊 
+    seven_bag_next = generateNewBag();
+
+    double piece_indicator_shape_alpha = 0;
+    double board_wobble = 0; 
+
+    int line_clear_combo = 0;
+    int btb_combo = 0;  // btb: "這次消層"與"下一次的消層"，必須是"Tetris"或 "T-spin" 
+
+    //Record finish score
+    int finish_score = 0;
+
+    //Choose First Piece
+    int choose_piece = seven_bag.at(0);
+    seven_bag.erase(seven_bag.begin());
+	
+	// piece 為一個 class (attribute: x, y, rotation; function: Rotate) 
+    color = choose_piece;
+    for(int i = 0; i < 4; i++) 
+    {
+        piece[i].x = pieces[choose_piece][i] % 2 + 4;
+        piece[i].y = pieces[choose_piece][i] / 2 + 3;
+        piece[i].rotation = 0;
+
+        if(color == J_TETROMINO) 
+            piece[i].x--;
+    }
+
+    for(int i = 0; i < 4; i++) 
+    {
+        // 轉的軸心是第二個方塊
+        Piece center = piece[1];
+        if(color == I_TETROMINO) piece[i].Rotate(center, 1);
+        if(color == T_TETROMINO) piece[i].Rotate(center, -1);
+        if(color == S_TETROMINO) piece[i].Rotate(center, -1);
+        if(color == Z_TETROMINO) piece[i].Rotate(center, -1);
+        if(color == L_TETROMINO) piece[i].Rotate(center, -1);
+        if(color == J_TETROMINO) piece[i].Rotate(center, 1);
+    }
+
+    int is_rotate_cw = 0;
+    int is_rotate_ccw = 0;
+    int is_harddrop = 0;
+    int is_right = 0;
+    int is_left = 0;
+    int is_hold = 0;
+    int is_sidehit = 0;
+    int is_tspin = 0;
+    int is_restart = 0;
+
+    int key_rotate_cw = 0;
+    int key_rotate_ccw = 0;
+    int key_harddrop = 0;
+    int key_right = 0;
+    int key_left = 0;
+    int key_right_hold = 0;
+    int key_left_hold = 0;
+    bool is_on_focus = true;
+    int last_key = 0;
+    int key_restart = 0;
+    
+    bool startGame = 0;
+    mode = 0;
+    difficulty_choice = 0;
+
+    while(window.isOpen()) 
+    {
+        if(!startGame)
+        {
+            Event event;
+            while(window.pollEvent(event))
+            {
+                if(event.type == Event::Closed)
+                {
+                    window.close();
+                }
+                if(event.type == Event::KeyPressed)
+                {
+                    if(Keyboard::isKeyPressed(Keyboard::Space))
+                    {
+                        startGame = 1;
+                    }
+                }
+            }
+            window.clear(Color::Black);
+            
+
+            // 畫背景
+            overBackground_s.setPosition(5,5);
+            window.draw(overBackground_s);
+
+            starticon_s.setPosition(135,175);
+            window.draw(starticon_s);
+			// Text: Welcome
+			text.setFont(font);
+			text.setCharacterSize(60);
+			text.setFillColor(Color::White);
+			
+			text.setString("= Welcome to Tetris Battle =");
+			text.setPosition(55, 80);
+			window.draw(text);
+			
+			// press 'space botton' to start the game
+			text.setFont(font);
+			text.setCharacterSize(50);
+			text.setFillColor(Color::White);
+			
+			text.setString("Press 'Space Button' to Start");
+			text.setPosition(80, 500);
+			window.draw(text);
+	
+			window.display();
+		}
+
+		if(startGame && difficulty_choice == 0 && mode == 0)
+		{
+			Event event;
+			sleep(0.1);
+			
+			while(window.pollEvent(event))
+			{
+				if(event.type == Event::Closed)
+				{
+					window.close();
+				}
+				if(event.type == Event::KeyPressed)
+				{
+					if(Keyboard::isKeyPressed(Keyboard::Num1) || Keyboard::isKeyPressed(Keyboard::Numpad1))
+					{
+						difficulty_choice = 1;
+						difficulty = 1;
+					}
+					else if(Keyboard::isKeyPressed(Keyboard::Num2) || Keyboard::isKeyPressed(Keyboard::Numpad2))
+					{
+						difficulty_choice = 2;
+						difficulty = 25;
+					}
+					else if(Keyboard::isKeyPressed(Keyboard::Num3) || Keyboard::isKeyPressed(Keyboard::Numpad3))
+					{
+						difficulty_choice = 3;
+						difficulty = 50;
+					}
+					else
+					{
+						sleep(0.1);
+					}
+				}
+			}
+			
+			// difficulty
+			window.clear(Color::Black);
+
+            overBackground_s.setPosition(5,board_wobble-5);
+            window.draw(overBackground_s);
+
+			text.setFont(font);
+			text.setCharacterSize(75);
+			text.setFillColor(Color::White);
+			
+			text.setString("MODE");
+			text.setPosition(250, 100);
+			window.draw(text);
+			
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::Yellow);
+			
+			text.setString("Please Choose & Press the Number");
+			text.setPosition(90, 200);
+			window.draw(text);
+			
+			// press '1' => classic
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::White);
+			
+			text.setString("1 :  Easy");
+			text.setPosition(180, 300);
+			window.draw(text);
+			
+			// press '2' => 40 L sprint
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::White);
+			
+			text.setString("2 :  Mid");
+			text.setPosition(180, 400);
+			window.draw(text);
+			
+			// press '3' => two minutes sprint
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::White);
+			
+			text.setString("3 :  Difficult");
+			text.setPosition(180, 500);
+			window.draw(text);
+			
+			window.display();
+		}
+		
+		if(startGame && difficulty_choice != 0 && mode == 0)
+		{
+			Event event;
+			sleep(0.1);
+			
+			while(window.pollEvent(event))
+			{
+				if(event.type == Event::Closed)
+				{
+					window.close();
+				}
+				if(event.type == Event::KeyPressed)
+				{
+					if(Keyboard::isKeyPressed(Keyboard::Num1) || Keyboard::isKeyPressed(Keyboard::Numpad1))
+					{
+						mode = 1;
+						sec_subtract_for_new_time = game_elapsed_time.getElapsedTime().asSeconds();
+						milsec_subtract_for_new_time = game_elapsed_time.getElapsedTime().asMilliseconds();
+					}
+					else if(Keyboard::isKeyPressed(Keyboard::Num2) || Keyboard::isKeyPressed(Keyboard::Numpad2))
+					{
+						mode = 2;
+						sec_subtract_for_new_time = game_elapsed_time.getElapsedTime().asSeconds();
+						milsec_subtract_for_new_time = game_elapsed_time.getElapsedTime().asMilliseconds();
+					}
+					else if(Keyboard::isKeyPressed(Keyboard::Num3) || Keyboard::isKeyPressed(Keyboard::Numpad3))
+					{
+						mode = 3;
+						sec_subtract_for_new_time = game_elapsed_time.getElapsedTime().asSeconds();
+						milsec_subtract_for_new_time = game_elapsed_time.getElapsedTime().asMilliseconds();
+					}
+					else
+					{
+						sleep(0.1);
+					}
+				}
+			}
+			
+			// mode
+			window.clear(Color::Black);
+
+            overBackground_s.setPosition(5,board_wobble-5);
+            window.draw(overBackground_s);
+
+			text.setFont(font);
+			text.setCharacterSize(75);
+			text.setFillColor(Color::White);
+			
+			text.setString("MODE");
+			text.setPosition(250, 100);
+			window.draw(text);
+			
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::Yellow);
+			
+			text.setString("Please Choose & Press the Number");
+			text.setPosition(90, 200);
+			window.draw(text);
+			
+			// press '1' => classic
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::White);
+			
+			text.setString("1 :  Classic");
+			text.setPosition(180, 300);
+			window.draw(text);
+			
+			// press '2' => 40 L sprint
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::White);
+			
+			text.setString("2 :  40 L Sprint");
+			text.setPosition(180, 400);
+			window.draw(text);
+			
+			// press '3' => two minutes sprint
+			text.setFont(font);
+			text.setCharacterSize(40);
+			text.setFillColor(Color::White);
+			
+			text.setString("3 :  Two Minutes Sprint");
+			text.setPosition(180, 500);
+			window.draw(text);
+			
+			window.display();
+		}
+		
+		if(mode != 0 && difficulty_choice != 0)
+		{
+	        float time = clock.getElapsedTime().asSeconds();
+	        int sec = game_elapsed_time.getElapsedTime().asSeconds();
+	        int milsec = game_elapsed_time.getElapsedTime().asMilliseconds();
+	        
+	        if(mode == 1 && difficulty < 100)
+	        {
+	        	difficulty = (sec - sec_subtract_for_new_time) * 3;
+			}
+	        
+	        for(int i = 0; i < 4; i++)
+			{
+	            cache[i] = piece[i];
+	            piece[i].y ++;
+	        }
+	        if(!isCollided()) 
+            {
+	            lock_delay_value -= time;
+	
+	            if(lock_delay_value <= 0) 
+                {
+	                for(int i = 0; i < 4; i++) piece[i] = cache[i];
+	                goto makeNewPiece;
+	            }
+	            if(is_touch_ground == 0) 
+                {
+	                is_touch_ground = 1;
+	            }
+	        }
+	        else 
+            {
+	            is_touch_ground = 0;
+	        }
+	        for(int i = 0; i < 4; i++) piece[i] = cache[i];
+	
+	        timer += time*difficulty;
+	        clock.restart();
+	
+	        Event e;
+	        while(window.pollEvent(e)) 
+            {
+
+	            if(e.type == Event::GainedFocus) 
+                    is_on_focus = true;
+	            if(e.type == Event::LostFocus) 
+                    is_on_focus = false;
+				
+	            if(is_on_focus && e.type == Event::KeyReleased) 
+                {
+	                if(e.key.code == Keyboard::X || e.key.code == Keyboard::Up) is_rotate_cw = 0;
+	                if(e.key.code == Keyboard::Z) is_rotate_ccw = 0;
+	                if(e.key.code == Keyboard::Space && mode != 1) is_harddrop = 0;
+	                if(e.key.code == Keyboard::C && hold_check == 0) 
+					{	
+						is_hold = 0; 
+						hold_check = 1;
+					}
+	                if(e.key.code == Keyboard::Left) 
+					{	
+						is_left = 0;
+						hold_key_once = 0;
+					}
+	                if(e.key.code == Keyboard::Right) 
+					{
+						is_right = 0;
+						hold_key_once = 0;
+					}
+	                if(e.key.code == Keyboard::R) is_restart = 0;
+	            }
+	
+	            if(e.type == Event::Closed) 
+	                window.close();
+	        }
+	
+	        if(is_on_focus) 
+            {
+	            //Key Fixed
+	            if(Keyboard::isKeyPressed(Keyboard::C) && is_hold == 0 && hold_check == 0) 
+                {
+	                is_hold = -1;
+	                holded = 1;
+	            }
+	            if((Keyboard::isKeyPressed(Keyboard::X) || Keyboard::isKeyPressed(Keyboard::Up)) && is_rotate_cw == 0) 
+                {
+	                is_rotate_cw = -1;
+	                rotate = 1;
+	            }
+	            if(Keyboard::isKeyPressed(Keyboard::Z) && is_rotate_ccw == 0) 
+                {
+	                is_rotate_ccw = -1;
+	                rotate = -1;
+	            }
+	            if(Keyboard::isKeyPressed(Keyboard::Space) && is_harddrop == 0) 
+                {
+	                is_harddrop = -1;
+	                harddrop = 1;
+	            }
+	            if(Keyboard::isKeyPressed(Keyboard::Left) && is_left >= 0 && is_left <= 2) 
+                {
+	                
+		            if(game_elapsed_time.getElapsedTime().asMilliseconds() - hold_key_milsec > 534 && is_left == 2)
+	                {
+	                	sleep(0.1);
+	                	move_left = 1;
+	                	hold_key_once = 0;
+					}
+	                
+	                else if(game_elapsed_time.getElapsedTime().asMilliseconds() - hold_key_milsec > 434 && is_left == 1)
+	                {
+	                	is_left = 2;
+	                	move_left = 1;
+	                	hold_key_once = 0;
+					}
+					
+	                else if(is_left == 0 && hold_key_once == 0)
+	                {
+	        	        hold_key_milsec = game_elapsed_time.getElapsedTime().asMilliseconds();
+	        	        hold_key_once = 1;
+	        	        is_left = 1;
+	                	move_left = 1;
+					}					
+
+	            }
+	            if(Keyboard::isKeyPressed(Keyboard::Right) && is_right >= 0 && is_right <= 2) 
+                {
+	                
+		            if(game_elapsed_time.getElapsedTime().asMilliseconds() - hold_key_milsec > 534 && is_right == 2)
+	                {
+	                	sleep(0.1);
+	                	move_right = 1;
+	                	hold_key_once = 0;
+					}
+	                
+	                else if(game_elapsed_time.getElapsedTime().asMilliseconds() - hold_key_milsec > 434 && is_right == 1)
+	                {
+	                	is_right = 2;
+	                	move_right = 1;
+	                	hold_key_once = 0;
+					}
+					
+	                else if(is_right == 0 && hold_key_once == 0)
+	                {
+	        	        hold_key_milsec = game_elapsed_time.getElapsedTime().asMilliseconds();
+	        	        hold_key_once = 1;
+	        	        is_right = 1;
+	                	move_right = 1;
+					}					
+
+	            }
+	            if(Keyboard::isKeyPressed(Keyboard::R) && is_restart == 0) 
+                {
+	                is_restart = -1;
+	                goto restart;
+	            }
+	            
+/*				//warning
+	            if(all_line_count + 5 >= mode2_lines or sec + 10 >= mode3_time)
+	            {
+	            	sfx_warning.play();
+				}
+*/	            
+				//Dead
+	            if(isDead() || mode_lines(mode, all_line_count) || mode_time(mode, sec, sec_subtract_for_new_time)) 
+				{
+                    window.clear();
+                    window.display();
+                    
+                    if(finish_time_check == 0)
+                    	finish_time = game_elapsed_time.getElapsedTime().asMilliseconds() - milsec_subtract_for_new_time;
+                    
+                    //Draw Backboard
+                    RectangleShape backboard_shape;
+                    backboard_shape.setSize(Vector2f(800, 800));
+                    backboard_shape.setFillColor(Color::Black);
+                    window.draw(backboard_shape);
+
+                    //Draw sad face
+                    sad_face_s.setPosition(210, 120);
+                    window.draw(sad_face_s);
+                
+                    //Draw text
+                    Text text;
+                    
+                    //Game Over 
+                    text.setFont(font);
+                    text.setCharacterSize(75);
+                    text.setFillColor(Color::White);
+
+                    text.setString("GAME OVER");
+                    text.setPosition(180, 30);
+                    window.draw(text);
+                
+                
+            // score
+            if(mode != 2)
+            {
+                    //Best score
+                    if(finish_score > best_score)
+                    {
+                        best_score = finish_score;
+                    }
+
+                    text.setFont(font);
+                    text.setCharacterSize(60);
+                    text.setFillColor(Color::White);
+                    
+                    text.setString("BEST SCORE : ");
+                    text.setPosition(200, 300);
+                    window.draw(text);
+
+                    text.setFont(font);
+                    text.setCharacterSize(65);
+                    text.setFillColor(Color::White);
+                    text.setString(to_string(best_score));
+                    text.setPosition(260, 360);
+                    window.draw(text);
+
+                    //Score:
+                    text.setFont(font);
+                    text.setCharacterSize(60);
+                    text.setFillColor(Color::White); 
+
+                    text.setString("SCORE :");
+                    text.setPosition(240, 440);
+                    window.draw(text);
+
+                    text.setFont(font);
+                    text.setCharacterSize(65);
+                    text.setFillColor(Color::White);
+                    
+                    text.setString(to_string(finish_score));
+                    text.setPosition(260, 500);
+                    window.draw(text);
+            }
+                    
+            // time
+            if(mode == 2)
+			{
+				
+                    if(finish_time > best_time)
+                    {
+                        best_time = finish_time;
+                    }
+                    
+			        //Best time
+                    text.setFont(font);
+                    text.setCharacterSize(60);
+                    text.setFillColor(Color::White); 
+
+                    text.setString("TIME :");
+                    text.setPosition(240, 300);
+                    window.draw(text);
+
+                    text.setFont(font);
+                    text.setCharacterSize(65);
+                    text.setFillColor(Color::White);
+                    
+                    text.setString(to_string((best_time%1000)/10));
+                    text.setPosition(320, 360);
+                    window.draw(text);
+
+                    text.setString(".");
+                    text.setPosition(320-20, 360);
+                    window.draw(text);
+                    
+                    text.setString(to_string((best_time%60000)/1000));
+                    text.setPosition(320-65, 360);
+                    window.draw(text);
+                    
+                    text.setString(":");
+                    text.setPosition(320-90, 360);
+                    window.draw(text);
+                    
+                    text.setString(to_string(best_time/60000));
+                    text.setPosition(320-150, 360);
+                    window.draw(text);
+
+                    text.setFont(font);
+                    text.setCharacterSize(60);
+                    text.setFillColor(Color::White); 
+                    
+					// finish time
+                    text.setString("TIME :");
+                    text.setPosition(240, 440);
+                    window.draw(text);
+
+                    text.setFont(font);
+                    text.setCharacterSize(65);
+                    text.setFillColor(Color::White);
+                    
+                    text.setString(to_string(finish_time%1000/10));
+                    text.setPosition(320, 500);
+                    window.draw(text);
+
+                    text.setString(".");
+                    text.setPosition(320-20, 500);
+                    window.draw(text);
+                    
+                    text.setString(to_string(finish_time%60000/1000));
+                    text.setPosition(320-65, 500);
+                    window.draw(text);
+                    
+                    text.setString(":");
+                    text.setPosition(320-90, 500);
+                    window.draw(text);
+                    
+                    text.setString(to_string(finish_time/60/1000));
+                    text.setPosition(320-150, 500);
+                    window.draw(text);
+            }	
+				
+				
+				
+			
+                    //Press R to restart
+                    text.setFont(font);
+                    text.setCharacterSize(35);
+                    text.setFillColor(Color::White);
+
+                    text.setString("Press 'R' to restart.");
+                    text.setPosition(190, 610);
+                    window.draw(text);
+
+                    //Press E to end
+                    text.setFont(font);
+                    text.setCharacterSize(35);
+                    text.setFillColor(Color::White);
+
+                    text.setString("Press 'E' to end.");
+                    text.setPosition(220, 650);
+                    window.draw(text);
+
+                    window.display();
+                   
+                    sleep(0.1); //不動0.1秒，0.1
+                    while(1)
+                    {
+                        if(Keyboard::isKeyPressed(Keyboard::R))
+                        {
+                            goto restart;
+                        }
+                        else if(Keyboard::isKeyPressed(Keyboard::E))
+                        {
+                            return 0;
+                        }
+                        else    
+                        {
+                            sleep(0.1);
+                        }
+                    }
+	            }
+	
+	            
+	            
+	            //========================= Move =========================
+	            if(Keyboard::isKeyPressed(Keyboard::Down)) 
+                {
+                    delay = fastdrop_delay;
+                }
+				key_left = Keyboard::isKeyPressed(Keyboard::Left);
+	            key_right = Keyboard::isKeyPressed(Keyboard::Right);
+	            
+				if(!key_left && !key_right) 
+                {
+                    das_value = das;
+                }
+	
+	            if(move_right) 
+                {
+	                for(int i = 0; i < 4; i++) 
+                    {
+	                    cache[i] = piece[i];
+	                    piece[i].x += 1;
+	                }
+	
+	                if(!isCollided()) 
+                    {
+                        for(int i = 0; i < 4; i++) 
+                        {
+                            piece[i] = cache[i];
+                        }
+                    }
+	                else 
+					{
+	                    if(lock_count_value > 0)
+						{
+	                        lock_count_value--;
+	                        lock_delay_value = lock_delay;
+	                    }
+	                }
+	
+	                das_value = das;
+	            }
+	           
+			    if(move_left) 
+                {
+	                for(int i = 0; i < 4; i++) 
+                    {
+	                    cache[i] = piece[i];
+	                    piece[i].x -= 1;
+	                }
+
+	                if(!isCollided()) 
+                    {
+                        for(int i = 0; i < 4; i++) 
+                        {
+                            piece[i] = cache[i];
+                        }
+                    }
+	                else
+					{
+	                    if(lock_count_value > 0) 
+                        {
+	                        lock_count_value--;
+	                        lock_delay_value = lock_delay;
+	                    }
+	                }
+	
+	                das_value = das;
+	            }
+	
+	            if(das_value <= 0) 
+                {
+	                for(int i = 0; i < 4; i++) 
+                    {
+	                    cache[i] = piece[i];
+	                    piece[i].x += sign(key_right - key_left);
+	                }
+	
+	                if(!isCollided()) 
+                    {
+	                    if(is_sidehit == 0) 
+                        {
+	                        is_sidehit = 1;
+	                    }
+	                    for(int i = 0; i < 4; i++) 
+                        {
+                            piece[i] = cache[i];
+                        }
+	                }
+	                else 
+                    {
+
+	                    is_sidehit = 0;
+	                    if(lock_count_value > 0) 
+                        {
+	                        lock_count_value--;
+	                        lock_delay_value = lock_delay;
+	                    }
+	                }
+	            }
+	            das_value -= clock.getElapsedTime().asSeconds() * 75;
+	
+	            //Hold
+	            if(holded) 
+                {
+	                if(hold == -1) 
+                    {
+	                    hold = color;
+	                    color = -1;
+	
+	                    while(isCollided()) 
+                        {
+	
+	                        for(int i = 0; i < 4; i++) 
+                            {
+                                piece[i].y ++;
+                            }
+	                    }
+	
+	                    for(int i = 0; i < 4; i++) 
+                        {
+                            piece[i].y --;
+                        }
+	                    lock_delay_value = -1;
+	                    timer = 0;
+	                    goto makeNewPiece;
+	                }
+	                else 
+                    {
+	                    int temp;
+	                    temp = color;
+	                    color = hold;
+	                    hold = temp;
+	                    timer = 0;
+	                    lock_count_value = lock_count;
+	                    lock_delay_value = lock_delay;
+	
+	                    choose_piece = color;
+	                    for(int i = 0; i < 4; i++) 
+                        {
+	                        piece[i].x = pieces[choose_piece][i] % 2 + 4;
+	                        piece[i].y = pieces[choose_piece][i] / 2 + 2;
+	                        piece[i].rotation = 0;
+	
+	                        if(color == J_TETROMINO) 
+                            {
+                                piece[i].x --;
+                            }
+	                        if(color == I_TETROMINO)
+                            {
+                                piece[i].y ++;
+                            }
+	                    }
+	                    for(int i = 0; i < 4; i++) 
+                        {
+	                        Piece center = piece[1];
+	                        if(color == I_TETROMINO) piece[i].Rotate(center, 1);
+	                        if(color == T_TETROMINO) piece[i].Rotate(center, -1);
+	                        if(color == S_TETROMINO) piece[i].Rotate(center, -1);
+	                        if(color == Z_TETROMINO) piece[i].Rotate(center, -1);
+	                        if(color == L_TETROMINO) piece[i].Rotate(center, -1);
+	                        if(color == J_TETROMINO) piece[i].Rotate(center, 1);
+	                        piece[i].rotation = 1;
+	                    }
+	                }
+	            }
+	
+	            //HardDrop
+	            if(harddrop && start <= 0) 
+                {
+	                while(isCollided()) 
+                    {
+	
+	                    for(int i = 0; i < 4; i++) 
+                        {
+                            piece[i].y ++;
+                        }
+	                }
+	
+	                for(int i = 0; i < 4; i++) 
+                    {
+                        piece[i].y --;
+                    }
+	                lock_delay_value = -1;
+	                goto makeNewPiece;
+	            }
+	
+	            //========================= Rotate =========================
+	            if(rotate != 0) 
+                {
+	                int before_rotation, after_rotation;
+	                for(int i = 0; i < 4; i++) 
+                    {
+	                    cache[i] = piece[i];
+	                    before_rotation = piece[i].rotation;
+	                    if(color == I_TETROMINO) 
+                        {
+	
+	                        if(piece[i].rotation == 1) 
+                            {
+	
+	                            if(rotate == 1) 
+                                {
+	                                if(i == 0) { piece[i].x-=1, piece[i].y-=1; };
+	                                if(i == 2) { piece[i].x+=1, piece[i].y+=1; };
+	                                if(i == 3) { piece[i].x+=2, piece[i].y+=2; };
+	                            }
+	                            else 
+                                {
+	                                if(i == 0) { piece[i].x-=2, piece[i].y+=2; };
+	                                if(i == 1) { piece[i].x-=1, piece[i].y+=1; };
+	                                if(i == 3) { piece[i].x+=1, piece[i].y-=1; };
+	                            }
+	                        }
+	                        if(piece[i].rotation == 2) 
+                            {
+	
+	                            if(rotate == 1) 
+                                {
+	                                if(i == 0) { piece[i].x-=2, piece[i].y+=2; };
+	                                if(i == 1) { piece[i].x-=1, piece[i].y+=1; };
+	                                if(i == 3) { piece[i].x+=1, piece[i].y-=1; };
+	                            }
+	                            else 
+                                {
+	                                if(i == 0) { piece[i].x+=1, piece[i].y+=1; };
+	                                if(i == 2) { piece[i].x-=1, piece[i].y-=1; };
+	                                if(i == 3) { piece[i].x-=2, piece[i].y-=2; };
+	                            }
+	                        }
+	                        if(piece[i].rotation == 3) 
+                            {
+	                            if(rotate == 1) 
+                                {
+	                                if(i == 0) { piece[i].x+=1, piece[i].y+=1; };
+	                                if(i == 2) { piece[i].x-=1, piece[i].y-=1; };
+	                                if(i == 3) { piece[i].x-=2, piece[i].y-=2; };
+	                            }
+	                            else 
+                                {
+	                                if(i == 0) { piece[i].x+=2, piece[i].y-=2; };
+	                                if(i == 1) { piece[i].x+=1, piece[i].y-=1; };
+	                                if(i == 3) { piece[i].x-=1, piece[i].y+=1; };
+	                            }
+	                        }
+	                        if(piece[i].rotation == 4) 
+                            {
+	                            if(rotate == 1)
+                                {
+	                                if(i == 0) { piece[i].x+=2, piece[i].y-=2; };
+	                                if(i == 1) { piece[i].x+=1, piece[i].y-=1; };
+	                                if(i == 3) { piece[i].x-=1, piece[i].y+=1; };
+	                            }
+	                            else 
+                                {
+	                                if(i == 0) { piece[i].x-=1, piece[i].y-=1; };
+	                                if(i == 2) { piece[i].x+=1, piece[i].y+=1; };
+	                                if(i == 3) { piece[i].x+=2, piece[i].y+=2; };
+	                            }
+	                        }
+	                        piece[i].rotation += rotate;
+	                    }
+	                    else if(color != O_TETROMINO) 
+                        {
+                            piece[i].Rotate(piece[1], rotate);
+                        }
+	
+	                    if(piece[i].rotation > 4) 
+                        {
+                            piece[i].rotation = 1;
+                        }
+	                    if(piece[i].rotation < 1) 
+                        {
+                            piece[i].rotation = 4;
+                        }
+	
+	                    after_rotation = piece[i].rotation;
+	                }
+	
+	                Piece rotation_piece[4];
+	                if(color != I_TETROMINO) 
+                    {
+	                    if((before_rotation == 1 && after_rotation == 2) || (before_rotation == 3 && after_rotation == 2)) { //1 >> 2 & 3 >> 2
+	                        //TEST 2
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                rotation_piece[i].x = piece[i].x;
+	                                rotation_piece[i].y = piece[i].y;
+	                                piece[i].x += -1;
+	                                piece[i].y += 0;
+	                            }
+	                        }
+	                        //TEST 3
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += -1;
+	                                piece[i].y += -1;
+	                            }
+	                        }
+	                        //TEST 4
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 0;
+	                                piece[i].y += 2;
+	                            }
+	                        }
+	                        //TEST 5
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += -1;
+	                                piece[i].y += 2;
+	                            }
+	                        }
+	                    }
+	                    if((before_rotation == 2 && after_rotation == 1) || (before_rotation == 2 && after_rotation == 3)) 
+                        { //2 >> 1 && 2 >> 3
+	                        //TEST 2
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                rotation_piece[i].x = piece[i].x;
+	                                rotation_piece[i].y = piece[i].y;
+	                                piece[i].x += 1;
+	                                piece[i].y += 0;
+	                            }
+	                        }
+	                        //TEST 3
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 1;
+	                                piece[i].y += 1;
+	                            }
+	                        }
+	                        //TEST 4
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 0;
+	                                piece[i].y += -2;
+	                            }
+	                        }
+	                        //TEST 5
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 1;
+	                                piece[i].y += -2;
+	                            }
+	                        }
+	                    }
+	                    if((before_rotation == 3 && after_rotation == 4) || (before_rotation == 1 && after_rotation == 4)) 
+                        { //3 >> 4 & 1 >> 4
+	                        //TEST 2
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                rotation_piece[i].x = piece[i].x;
+	                                rotation_piece[i].y = piece[i].y;
+	                                piece[i].x += 1;
+	                                piece[i].y += 0;
+	                            }
+	                        }
+	                        //TEST 3
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 1;
+	                                piece[i].y += -1;
+	                            }
+	                        }
+	                        //TEST 4
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 0;
+	                                piece[i].y += 2;
+	                            }
+	                        }
+	                        //TEST 5
+	                        if(!isCollided())
+                             {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 1;
+	                                piece[i].y += 2;
+	                            }
+	                        }
+	                    }
+	                    if((before_rotation == 4 && after_rotation == 3) || (before_rotation == 4 && after_rotation == 1)) 
+                        { //4 >> 3 && 4 >> 1
+	                        //TEST 2
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                rotation_piece[i].x = piece[i].x;
+	                                rotation_piece[i].y = piece[i].y;
+	                                piece[i].x += -1;
+	                                piece[i].y += 0;
+	                            }
+	                        }
+	                        //TEST 3
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += -1;
+	                                piece[i].y += 1;
+	                            }
+	                        }
+	                        //TEST 4
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += 0;
+	                                piece[i].y += -2;
+	                            }
+	                        }
+	                        //TEST 5
+	                        if(!isCollided()) 
+                            {
+	                            for(int i = 0; i < 4; i++) 
+                                {
+	                                piece[i].x = rotation_piece[i].x;
+	                                piece[i].y = rotation_piece[i].y;
+	                                piece[i].x += -1;
+	                                piece[i].y += -2;
+	                            }
+	                        }
+	                    }
+	                }
+	
+	                if(!isCollided()) 
+                    {
+                        for(int i = 0; i < 4; i++) 
+                        {
+                            piece[i] = cache[i];
+                        }
+                    }
+	                else 
+                    {
+	                    if(lock_count_value > 0) 
+                        {
+	                        lock_count_value--;
+	                        lock_delay_value = lock_delay;
+	                    }
+	
+	                    if(color == T_TETROMINO) 
+                        {
+	                        int corner_count = 0;
+	                        if(board[piece[1].y + 1][piece[1].x + 1] != 0 || piece[1].x + 1 >= WIDTH || piece[1].y + 1 >= HEIGHT) corner_count ++;
+	                        if(board[piece[1].y + 1][piece[1].x - 1] != 0 || piece[1].x - 1 < 0 || piece[1].y + 1 >= HEIGHT) corner_count ++;
+	                        if(board[piece[1].y - 1][piece[1].x + 1] != 0 || piece[1].x + 1 >= WIDTH || piece[1].y - 1 < 0) corner_count ++;
+	                        if(board[piece[1].y - 1][piece[1].x - 1] != 0 || piece[1].x - 1 < 0 || piece[1].y + 1 < 0) corner_count ++;
+	
+	                        if(corner_count >= 3)
+							{
+	                            is_tspin = 1;
+	                        }
+	                    }
+	                }
+	            }
+	
+	            //Game Update
+	            if(timer > delay) 
+                {
+	                makeNewPiece :
+	
+	                for(int i = 0; i < 4; i++) 
+                    {
+	                    cache[i] = piece[i];
+	                    piece[i].y ++;
+	                }
+	
+	                if(!isCollided() && lock_delay_value < 0) 
+                    {
+						hold_check = 0;
+						
+	                    if(!holded) 
+                        {
+	                        vector <PieceLock> piece_lock;
+	                        for(int i = 0; i < 4; i++) 
+                            {
+	                            PieceLock piece_lock_one;
+	                            piece_lock_one.x = piece[i].x;
+	                            piece_lock_one.y = piece[i].y;
+	
+	                            piece_lock.push_back(piece_lock_one);
+	                        }
+	                        pieces_lock.push_back(piece_lock);
+	
+	                        board_wobble = 7;
+	                        all_piece_count ++;
+	                    }
+	
+	                    for(int i = 0; i < 4; i++) 
+                        {
+                            board[cache[i].y][cache[i].x] = color + 1;
+                        }
+	                    int choose_piece = seven_bag.at(0);
+	                    seven_bag.erase(seven_bag.begin());
+	                    if(seven_bag.size() == 0) 
+                        {
+	                        seven_bag = seven_bag_next;
+	                        seven_bag_next = generateNewBag();
+	                    }
+	
+	                    color = choose_piece;
+	                    for(int i = 0; i < 4; i++) 
+                        {
+	                        piece[i].x = pieces[choose_piece][i] % 2 + 4;
+	                        piece[i].y = pieces[choose_piece][i] / 2 + 2;
+	                        piece[i].rotation = 0;
+	
+	                        if(color == J_TETROMINO) 
+                            {
+                                piece[i].x --;
+                            }
+	                        if(color == I_TETROMINO) 
+                            {
+                                piece[i].y ++;
+                            }
+	                    }
+	                    for(int i = 0; i < 4; i++) 
+                        {
+	                        Piece center = piece[1];
+	                        if(color == I_TETROMINO) 
+                                piece[i].Rotate(center, 1);
+	                        if(color == T_TETROMINO) 
+                                piece[i].Rotate(center, -1);
+	                        if(color == S_TETROMINO)
+                                piece[i].Rotate(center, -1);
+	                        if(color == Z_TETROMINO) 
+                                piece[i].Rotate(center, -1);
+	                        if(color == L_TETROMINO) 
+                                piece[i].Rotate(center, -1);
+	                        if(color == J_TETROMINO) 
+                                piece[i].Rotate(center, 1);
+	                        piece[i].rotation = 1;
+	                    }
+	
+	                    lock_delay_value = lock_delay;
+	                    lock_count_value = lock_count;
+	                    is_touch_ground = 0;
+	
+	                    //=====================Clear Lines========================
+	                    int line_clear_count = 0;
+	                    int checkLine = HEIGHT - 1;
+	                    for(int i = HEIGHT - 1; i > 0; i--) 
+                        {
+	                        int count = 0;
+	                        for(int j = 0; j < WIDTH; j++) 
+                            {
+	                            if(board[i][j]) count++;
+	                            board[checkLine][j] = board[i][j];
+	                        }
+	                        if(count < WIDTH) 
+                                checkLine--;
+	                        else line_clear_count++;
+	                    }
+                   if(line_clear_count != 0) 
+                   {
+                        line_clear_combo ++;
+                        if(line_clear_count == 4 || is_tspin) 
+                        {
+                            btb_combo ++;
+                            if(btb_combo > 1) 
+                            {
+                                sfx_clearbtb.play();
+                            }
+                            else {
+                                if(is_tspin) 
+                                {
+                                    sfx_clearspin.play();
+                                }
+                                else 
+                                {
+                                    sfx_clearquad.play();
+                                }
+                            }
+
+                            int combo = line_clear_combo - 1;
+                            combo_count += combo;
+                            if(combo == 1) 
+                            {
+                                sfx_combo_1.play();
+                            }
+                            else if(combo == 2) 
+                                sfx_combo_2.play();
+                            else if(combo == 3) 
+                                sfx_combo_3.play();
+                            else if(combo == 4) 
+                                sfx_combo_4_power.play();
+                            else if(combo == 5) 
+                                sfx_combo_5_power.play();
+                            else if(combo == 6) 
+                                sfx_combo_6_power.play();
+                            else if(combo == 7) 
+                                sfx_combo_7_power.play();
+                            else if(combo == 8) 
+                                sfx_combo_8_power.play();
+                            else if(combo == 9) 
+                                sfx_combo_9_power.play();
+                            else if(combo == 10) 
+                                sfx_combo_10_power.play();
+                            else if(combo == 11) 
+                                sfx_combo_11_power.play();
+                            else if(combo == 12) 
+                                sfx_combo_12_power.play();
+                            else if(combo == 13) 
+                                sfx_combo_13_power.play();
+                            else if(combo == 14)
+                                sfx_combo_14_power.play();
+                            else if(combo == 15) 
+                                sfx_combo_15_power.play();
+                            else if(combo >= 16) 
+                                sfx_combo_16_power.play();
+                        }
+                        else 
+                        {
+                            if(btb_combo != 0) 
+                            {
+                                if(btb_combo > 1) 
+                                {
+                                    sfx_btb_break.play();
+                                }
+                                btb_combo = 0;
+                            }
+
+                            sfx_clearline.play();
+
+                            int combo = line_clear_combo - 1;
+                            combo_count += combo;
+                            if(combo == 1) 
+                                sfx_combo_1.play();
+                            else if(combo == 2) 
+                                sfx_combo_2.play();
+                            else if(combo == 3) 
+                                sfx_combo_3.play();
+                            else if(combo == 4) 
+                                sfx_combo_4.play();
+                            else if(combo == 5) 
+                                sfx_combo_5.play();
+                            else if(combo == 6) 
+                                sfx_combo_6.play();
+                            else if(combo == 7) 
+                                sfx_combo_7.play();
+                            else if(combo == 8) 
+                                sfx_combo_8.play();
+                            else if(combo == 9) 
+                                sfx_combo_9.play();
+                            else if(combo == 10) 
+                                sfx_combo_10.play();
+                            else if(combo == 11)
+                                sfx_combo_11.play();
+                            else if(combo == 12) 
+                                sfx_combo_12.play();
+                            else if(combo == 13) 
+                                sfx_combo_13.play();
+                            else if(combo == 14) 
+                                sfx_combo_14.play();
+                            else if(combo == 15) 
+                                sfx_combo_15.play();
+                            else if(combo >= 16) 
+                                sfx_combo_16.play();
+                        }
+
+                        all_line_count += line_clear_count;
+                    }
+                    else if(line_clear_combo != 0) 
+                    {
+                        if(line_clear_combo > 3) 
+                            sfx_combobreak.play();
+                        line_clear_combo = 0;
+                    }
+	
+	                    int perfect_clear = 1;
+	                    for(int i = 0; i < HEIGHT; i++) 
+                        {
+	                        for(int j = 0; j < WIDTH; j++) 
+                            {
+	                            if(board[i][j] != 0) 
+                                    perfect_clear = 0;
+	                        }
+	                    }
+	
+	                    is_tspin = 0;
+	                }
+	                else if(!isCollided()) 
+                    {
+	                    for(int i = 0; i < 4; i++) 
+                            piece[i] = cache[i];
+	                }
+	                else 
+                    {
+	                    lock_count_value = lock_count;
+	                }
+	
+	                timer = 0;
+	            }
+	            board_wobble += 100 * ((-board_wobble) / 15) * time;
+	
+	            //Update Ghost
+	            for(int i = 0; i < 4; i++) 
+                {
+	                ghost[i].x = piece[i].x;
+	                ghost[i].y = piece[i].y;
+	            }
+	           
+			    for(int i = 0; i < 4; i++) 
+                {
+	                while(isCollidedGhost()) 
+                    {
+	
+	                    for(int i = 0; i < 4; i++) 
+                        {
+                            ghost[i].y ++;
+                        }
+	                }
+	
+	                for(int i = 0; i < 4; i++) 
+                    {
+                        ghost[i].y --;
+                    }
+	            }
+	
+	            move_x = 0;
+	            rotate = 0;
+	            delay = 0.5;
+	            harddrop = 0;
+	            holded = 0;
+	            move_left = 0;
+	            move_right = 0;
+	
+	            window.clear(Color::Black);
+	
+	            //Draw Backboard
+	            RectangleShape backboard_shape;
+	            backboard_shape.setSize(Vector2f(320, 650));
+	            backboard_shape.setFillColor(Color::White);
+	            backboard_shape.setPosition(140, 20 + board_wobble);
+	            window.draw(backboard_shape);
+
+                //Draw Background
+                background_s.setPosition(-5, board_wobble+15);
+                window.draw(background_s);
+
+                // 畫下一個方框
+                nextsquare_s.setPosition(460,85);
+                window.draw(nextsquare_s);
+                
+
+
+                // 畫下下一個方框
+                nextsquare_s.setPosition(460,230);
+                window.draw(nextsquare_s);
+
+                // 畫Hold方框
+                nextsquare_s.setPosition(5,85);
+                window.draw(nextsquare_s);
+
+	
+	            //Draw Grid
+	            board_s.setPosition(150, -30 + board_wobble);
+	            window.draw(board_s);
+	
+	            //Draw Das Bar
+	            float das_progress = max((double)0, (double)(lock_delay_value / lock_delay));
+	
+	            RectangleShape das_bar_shape;
+	            das_bar_shape.setSize(Vector2f(das_progress * 320, 8));
+	            das_bar_shape.setFillColor(Color::White);
+	            das_bar_shape.setPosition(140, 700 + board_wobble);
+	            window.draw(das_bar_shape);
+	
+	            //Draw Lock Count
+	            CircleShape lock_count_circle;
+	            lock_count_circle.setRadius(6);
+	            lock_count_circle.setFillColor(Color::White);
+	            for(int i = 0; i < lock_count_value; i++) {
+	
+	                lock_count_circle.setPosition(141 + (i * 23.5), 680 + board_wobble);
+	                window.draw(lock_count_circle);
+	            }
+	
+	            //Draw Hold
+	            s.setColor(Color(255, 255, 255, 255));
+	            if(hold != -1) 
+                {
+	                Piece hold_piece[4];
+	                int hold_piece_choose;
+	                hold_piece_choose = hold;
+	
+	                for(int j = 0; j < 4; j++) 
+                    {
+	
+	                    hold_piece[j].x = pieces[hold_piece_choose][j] % 2 + 4;
+	                    hold_piece[j].y = pieces[hold_piece_choose][j] / 2 + 3;
+	
+	                    if(hold == J_TETROMINO)
+                        {
+                            hold_piece[j].x --;
+                        }
+	                }
+	                for(int j = 0; j < 4; j++) 
+                    {
+	                    Piece center = hold_piece[1];
+	                    if(hold == I_TETROMINO) hold_piece[j].Rotate(center, 1);
+	                    if(hold == T_TETROMINO) hold_piece[j].Rotate(center, -1);
+	                    if(hold == S_TETROMINO) hold_piece[j].Rotate(center, -1);
+	                    if(hold == Z_TETROMINO) hold_piece[j].Rotate(center, -1);
+	                    if(hold == L_TETROMINO) hold_piece[j].Rotate(center, -1);
+	                    if(hold == J_TETROMINO) hold_piece[j].Rotate(center, 1);
+	                }
+	
+	                for(int j = 0; j < 4; j++) 
+                    {
+	                    s.setTextureRect(IntRect(hold*texture_size, 0, texture_size, texture_size));
+	                    int x_offset = 0;
+	                    if(hold == I_TETROMINO || hold == O_TETROMINO) 
+                        {
+                            x_offset = 15;
+                        }
+	                    s.setPosition(hold_piece[j].x * texture_size - 65 - x_offset + 5, hold_piece[j].y * texture_size + 20 );
+	                    window.draw(s);
+	                }
+	            }
+	
+	            //Draw Next Pieces
+	            s.setColor(Color(255, 255, 255, 255));
+	            for(int i = 0; i < seven_bag.size() + seven_bag_next.size(); i++) 
+                {
+	                if(i < 2) 
+                    {
+	                    Piece next_piece[4];
+	                    int next_piece_choose;
+	                    if(i < seven_bag.size()) 
+                        {
+                            next_piece_choose = seven_bag.at(i);
+                        }
+	                    else 
+                        {
+                            next_piece_choose = seven_bag_next.at(i - seven_bag.size());
+                        }
+	
+	                    int next_color = next_piece_choose;
+	                    for(int j = 0; j < 4; j++) {
+	
+	                        next_piece[j].x = pieces[next_piece_choose][j] % 2 + 4;
+	                        next_piece[j].y = pieces[next_piece_choose][j] / 2 + 3;
+	
+	                        if(next_color == J_TETROMINO) next_piece[j].x --;
+	                    }
+	                    for(int j = 0; j < 4; j++) {
+	
+	                        Piece center = next_piece[1];
+	                        if(next_color == I_TETROMINO) next_piece[j].Rotate(center, 1);
+	                        if(next_color == T_TETROMINO) next_piece[j].Rotate(center, -1);
+	                        if(next_color == S_TETROMINO) next_piece[j].Rotate(center, -1);
+	                        if(next_color == Z_TETROMINO) next_piece[j].Rotate(center, -1);
+	                        if(next_color == L_TETROMINO) next_piece[j].Rotate(center, -1);
+	                        if(next_color == J_TETROMINO) next_piece[j].Rotate(center, 1);
+	                    }
+	
+	                    for(int j = 0; j < 4; j++) {
+	
+	                        s.setTextureRect(IntRect(next_color*texture_size, 0, texture_size, texture_size));
+	                        int x_offset = 0;
+	                        if(next_color == I_TETROMINO || next_color == O_TETROMINO) x_offset = 15;
+	                        s.setPosition(next_piece[j].x * texture_size + 395 - x_offset, next_piece[j].y * texture_size + 20 + (150 * i));
+	                        window.draw(s);
+	                    }
+	                }
+	            }
+	
+	            //Draw Placed Pieces
+	            for(int i = 0; i < HEIGHT; i++) {
+	
+	                for(int j = 0; j < WIDTH; j++) {
+	
+	                    s.setColor(Color(255, 255, 255, 255));
+	                    if(board[i][j] == 0) continue;
+	                    s.setTextureRect(IntRect((board[i][j] - 1)*texture_size, 0, texture_size, texture_size));
+	                    s.setPosition(j * texture_size + 150, i * texture_size - 90 + board_wobble);
+	                    window.draw(s);
+	                }
+	            }
+	
+	            //Draw Piece Lock
+	            for(int i = 0; i < pieces_lock.size(); i++) {
+	
+	                for(int j = 0; j < 4; j++) {
+	
+	                    s_lock.setTextureRect(IntRect((int)pieces_lock.at(i).at(j).animation*texture_size, 0, texture_size, texture_size));
+	                    s_lock.setColor(Color(255, 255, 255, 200));
+	                    s_lock.setPosition(pieces_lock.at(i).at(j).x * texture_size + 150, (pieces_lock.at(i).at(j).y - 1) * texture_size - 90 + board_wobble);
+	                    window.draw(s_lock);
+	
+	                    pieces_lock.at(i).at(j).animation += time * FRAMERATE * 4;
+	                }
+	
+	                for(int j = 0; j < 4; j++) {
+	
+	                    if(pieces_lock.at(i).at(j).animation >= 67) {
+	
+	                        pieces_lock.erase(pieces_lock.begin() + i);
+	                        break;
+	                    }
+	                }
+	            }
+	
+	            //Draw Ghost
+	            s_ghost.setTextureRect(IntRect(color*texture_size, 0, texture_size, texture_size));
+	            for(int i = 0; i < 4; i++) {
+	
+	                s_ghost.setPosition(piece[i].x * texture_size + 150, ghost[i].y * texture_size - 90 + board_wobble);
+	                window.draw(s_ghost);
+	            }
+
+	
+	            //Draw Pieces
+	            piece_indicator_shape_alpha = (sin(game_elapsed_time.getElapsedTime().asSeconds() * 10) + 1) * 30;
+	            RectangleShape piece_indicator_shape;
+	            piece_indicator_shape.setSize(Vector2f(30, 30));
+	            piece_indicator_shape.setFillColor(Color(255, 255, 255, piece_indicator_shape_alpha));
+	
+	            float piece_alpha = max((double)0, (double)(lock_delay_value / lock_delay));
+	            for(int i = 0; i < 4; i++) {
+	
+	                s.setTextureRect(IntRect(7*texture_size, 0, texture_size, texture_size));
+	                s.setColor(Color(255, 255, 255, 255));
+	                s.setPosition(piece[i].x * texture_size + 150, piece[i].y * texture_size - 90 + board_wobble);
+	                window.draw(s);
+	
+	                s.setTextureRect(IntRect(color*texture_size, 0, texture_size, texture_size));
+	                s.setColor(Color(255, 255, 255, piece_alpha * 255));
+	                s.setPosition(piece[i].x * texture_size + 150, piece[i].y * texture_size - 90 + board_wobble);
+	                window.draw(s);
+	
+	                piece_indicator_shape.setPosition(piece[i].x * texture_size + 150, piece[i].y * texture_size - 90 + board_wobble);
+	                window.draw(piece_indicator_shape);
+	            }
+	
+	            //Draw Backboard
+	            backboard_shape.setSize(Vector2f(320, 20));
+	            backboard_shape.setFillColor(Color::Black);
+	            backboard_shape.setPosition(140, 0 + board_wobble);
+	            window.draw(backboard_shape);
+	
+	            backboard_shape.setSize(Vector2f(320, 10));
+	            backboard_shape.setFillColor(Color::White);
+	            backboard_shape.setPosition(140, 10 + board_wobble);
+	            window.draw(backboard_shape);
+	
+
+	            //Draw Text
+	            Text text;
+	            text.setFont(font);
+	            text.setCharacterSize(60);
+	            text.setFillColor(Color::White);
+	
+	            text.setString("NEXT");
+	            text.setPosition(480, 10);
+	            window.draw(text);
+	
+	            text.setString("HOLD");
+	            text.setPosition(25, 30);
+	            window.draw(text);
+	
+                Text comboNum;
+	            comboNum.setFont(font);
+	            comboNum.setCharacterSize(60);
+	            comboNum.setFillColor(Color::Black);
+	            text.setCharacterSize(40);
+	            text.setString(" COMBO");
+                comboNum.setString(to_string(line_clear_combo-1));
+	            text.setPosition(475, 400);
+                comboNum.setPosition(510,460);
+                explodeto_s.setPosition(465,440);
+                explode4to6_s.setPosition(470,445);
+                explode7to9_s.setPosition(465,440);
+                explode10_s.setPosition(465,440);
+	            if(line_clear_combo > 1 and line_clear_combo <= 3) 
+                {
+                    window.draw(text);
+                    window.draw(explodeto_s);
+                    window.draw(comboNum);
+                }
+                else if(line_clear_combo > 3 and line_clear_combo <= 6)
+                {
+                    window.draw(text);
+                    window.draw(explode4to6_s);
+                    window.draw(comboNum);
+                }
+                else if(line_clear_combo > 6 and line_clear_combo <= 9)
+                {
+	                comboNum.setFillColor(Color::Red);
+                    window.draw(text);
+                    window.draw(explode7to9_s);
+                    window.draw(comboNum);
+                }
+                else if(line_clear_combo > 9)
+                {
+	                comboNum.setFillColor(Color::Red);
+                    comboNum.move(-10,0);
+                    window.draw(text);
+                    window.draw(explode10_s);
+                    window.draw(comboNum);
+                }
+	
+	            RectangleShape text_box;
+	            Rect <float>text_rect = text.getLocalBounds();;
+	            text_box.setFillColor(Color::White);
+
+				const int JEHIGHT = 30; 
+	
+				//lines
+				text.setFillColor(Color::White);
+				text.setCharacterSize(35);
+				text.setString("LINES");
+				text_rect = text.getLocalBounds();
+				text.setPosition(120 - text_rect.width, 400 + JEHIGHT + board_wobble);
+				fontsquare_s.setPosition(80 - text_rect.width, 400 + JEHIGHT + board_wobble);
+				window.draw(fontsquare_s);
+				window.draw(text);
+
+				text.setFillColor(Color::White);
+				text.setCharacterSize(30);
+				text.setString(to_string(all_line_count));
+				text_rect = text.getLocalBounds();
+				text.setPosition(120 - text_rect.width, 450 + JEHIGHT + board_wobble);
+				window.draw(text);
+	
+				// Pieces
+				text.setFillColor(Color::White);
+				text.setCharacterSize(35);
+				text.setString("PIECES");
+				text_rect = text.getLocalBounds();
+				text.setPosition(120 - text_rect.width, 510 + JEHIGHT + board_wobble);
+				fontsquare_s.setPosition(80 - text_rect.width, 510 + JEHIGHT + board_wobble);
+				window.draw(fontsquare_s);
+				window.draw(text);
+
+				text.setFillColor(Color::White);
+				text.setCharacterSize(35);
+				text.setString(to_string(all_piece_count));
+				text_rect = text.getLocalBounds();
+				text.setPosition(120 - text_rect.width, 560 + JEHIGHT + board_wobble);
+				window.draw(text);
+				
+	            //Time
+	            text.setFillColor(Color::White);
+	            text.setCharacterSize(35);
+	            text.setString("TIME");
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120 - text_rect.width, 180 + JEHIGHT + board_wobble);
+	            fontsquare_s.setPosition(60 - text_rect.width, 180 + JEHIGHT + board_wobble);
+	            window.draw(fontsquare_s);
+	            window.draw(text);
+	    		
+	            text.setFillColor(Color::White);
+	            text.setCharacterSize(30);
+	            text.setString((to_string((milsec - milsec_subtract_for_new_time) % 1000 /10)));
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120 - text_rect.width, 230 + JEHIGHT + board_wobble);
+	            window.draw(text);
+	            
+	            text.setString(".");
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120-23 - text_rect.width, 230 + JEHIGHT + board_wobble);
+	            window.draw(text);
+	            
+	            text.setString((to_string((sec - sec_subtract_for_new_time) % 60)));
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120-33 - text_rect.width, 230 + JEHIGHT + board_wobble);
+	            window.draw(text);
+	            
+	            text.setString(".");
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120-56 - text_rect.width, 230 + JEHIGHT + board_wobble);
+	            window.draw(text);
+	            
+	            text.setString(to_string(((sec - sec_subtract_for_new_time)/60)));
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120-66 - text_rect.width, 230 + JEHIGHT + board_wobble);
+	            window.draw(text);
+	            
+	            
+	
+	            //Score
+	            text.setFillColor(Color::White);
+	            text.setCharacterSize(35);
+	            text.setString("Score");
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120 - text_rect.width, 290 + JEHIGHT + board_wobble);
+	            text_box.setSize(Vector2f(text_rect.width + 40, text_rect.height * 2 - 4));
+	            text_box.setOrigin(Vector2f(20, 0));
+	            text_box.setPosition(text.getPosition());
+	            fontsquare_s.setPosition(80 - text_rect.width, 290 + JEHIGHT + board_wobble);
+	            window.draw(fontsquare_s);
+	            window.draw(text);
+	
+	            //score handling
+	            finish_score = combo_count*50 + all_piece_count*10 + all_line_count*100;
+	
+	            text.setFillColor(Color::White);
+	            text.setCharacterSize(30);
+	            text.setString(to_string(combo_count*50 + all_piece_count*10 + all_line_count*100));
+	            text_rect = text.getLocalBounds();
+	            text.setPosition(120 - text_rect.width, 340 + JEHIGHT + board_wobble);
+	            window.draw(text);
+	
+	            window.display();
+
+            }
+            start --;
+            game_clock.restart();
+        }
+    }
+
+return 0;
+}
